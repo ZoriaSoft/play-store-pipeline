@@ -1,0 +1,5 @@
+Question ID (machine readable),Response ID (machine readable),Response value,Answer requirement,Human-friendly question label
+PSL_DATA_COLLECTION_COLLECTS_PERSONAL_DATA,,FALSE,REQUIRED,Does your app collect or share any of the required user data types?
+PSL_DATA_COLLECTION_ENCRYPTED_IN_TRANSIT,,,MAYBE_REQUIRED,Is all of the user data collected by your app encrypted in transit?
+PSL_DATA_COLLECTION_USER_REQUEST_DELETE,,,MAYBE_REQUIRED,Do you provide a way for users to request that their data is deleted?
+PSL_SUPPORTED_ACCOUNT_CREATION_METHODS,PSL_ACM_NONE,TRUE,MULTIPLE_CHOICE,Account creation: the app has no accounts

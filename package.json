@@ -1,0 +1,19 @@
+{
+  "name": "play-store-pipeline",
+  "version": "1.0.0",
+  "description": "Google Play Console without a browser: upload, promote, staged rollout, store listing, images, Data safety, reviews — Android Publisher API v3 CLI and agent skill.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "play-api": "./play-api.ts" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "googleapis": "^176.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.6.0"
+  }
+}

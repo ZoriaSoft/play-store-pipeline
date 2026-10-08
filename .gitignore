@@ -1,0 +1,9 @@
+node_modules/
+# credentials and local config — never commit
+.env
+.env.*
+!.env.example
+service-account.json
+*.jks
+*.keystore
+key.properties

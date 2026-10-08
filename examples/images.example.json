@@ -1,0 +1,7 @@
+[
+  { "lang": "en-US", "type": "phoneScreenshots", "files": ["store/en/01.png", "store/en/02.png", "store/en/03.png"] },
+  { "lang": "en-US", "type": "featureGraphic", "files": ["store/en/feature.png"] },
+  { "lang": "en-US", "type": "icon", "files": ["store/icon_512.png"] },
+  { "lang": "tr-TR", "type": "phoneScreenshots", "files": ["store/tr/01.png", "store/tr/02.png", "store/tr/03.png"] },
+  { "lang": "tr-TR", "type": "featureGraphic", "files": ["store/tr/feature.png"] }
+]
