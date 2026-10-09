@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { parseArgs, releaseNotes, run, UsageError, type Deps } from "../src/commands.ts";
+import { createHash } from "node:crypto";
+import { parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
 
 // A fake androidpublisher client that records every call as "path(args)".
-function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string } = {}) {
+function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string } = {}) {
   const calls: { name: string; args: any }[] = [];
   const tracks: Record<string, any[]> = JSON.parse(JSON.stringify(state.tracks ?? {}));
   const rec = (name: string, result: any = {}) => async (args: any) => { calls.push({ name, args }); return { data: result, status: 200 }; };
@@ -15,7 +16,11 @@ function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: stri
         if (state.failCommit) throw new Error(state.failCommit);
         return { data: { id: "E1" } };
       },
-      delete: rec("edits.delete"),
+      delete: async (args: any) => {
+        calls.push({ name: "edits.delete", args });
+        if (state.failDelete) throw new Error(state.failDelete);
+        return { data: {}, status: 200 };
+      },
       tracks: {
         list: async (args: any) => { calls.push({ name: "tracks.list", args });
           return { data: { tracks: Object.entries(tracks).map(([track, releases]) => ({ track, releases })) } }; },
@@ -30,7 +35,13 @@ function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: stri
         update: rec("listings.update"),
       },
       images: { list: rec("images.list", { images: [{ id: "i1", sha1: "s1", sha256: "s256" }] }),
-        deleteall: rec("images.deleteall"), upload: rec("images.upload", { image: { sha1: "up" } }) },
+        deleteall: rec("images.deleteall"),
+        upload: async (args: any) => {
+          calls.push({ name: "images.upload", args });
+          const sha1 = state.imageSha1
+            ?? createHash("sha1").update(args.media?.body ?? "").digest("hex");
+          return { data: { image: { sha1 } }, status: 200 };
+        } },
       testers: { get: rec("testers.get", { googleGroups: ["g@example.com"] }) },
       details: { get: rec("details.get", { defaultLanguage: "en-US" }), patch: rec("details.patch") },
     },
@@ -47,7 +58,8 @@ function deps(play: any, files: Record<string, string> = {}): Deps & { out: stri
     readFile: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return Buffer.from(files[p]); },
     fileSize: (p) => (files[p] ?? "").length,
     fileExists: (p) => p in files,
-    openStream: (p) => `stream:${p}`,
+    // run() resolves file paths before streaming; map back to the fixture key
+    openStream: (p) => files[p] ?? files[p.split("/").pop()!],
   };
 }
 
@@ -136,11 +148,12 @@ describe("upload / promote", () => {
 
 describe("rollout", () => {
   const prod = { production: [{ status: "inProgress", versionCodes: ["42"], userFraction: 0.1 }] };
+  const CONFIRM = ["--confirm-production"];
   for (const [flags, expected] of [
-    [["--fraction", "0.5"], { status: "inProgress", userFraction: 0.5 }],
-    [["--halt"], { status: "halted", userFraction: 0.1 }],
-    [["--resume"], { status: "inProgress", userFraction: 0.1 }],
-    [["--complete"], { status: "completed" }],
+    [["--fraction", "0.5", ...CONFIRM], { status: "inProgress", userFraction: 0.5 }],
+    [["--halt"], { status: "halted", userFraction: 0.1 }],   // emergency stop: exempt from the gate
+    [["--resume", ...CONFIRM], { status: "inProgress", userFraction: 0.1 }],
+    [["--complete", ...CONFIRM], { status: "completed" }],
   ] as const) {
     test(flags.join(" "), async () => {
       const f = fakePlay({ tracks: prod });
@@ -148,6 +161,22 @@ describe("rollout", () => {
       expect(f.calls.find((c) => c.name === "tracks.update")!.args.requestBody.releases[0]).toEqual({ versionCodes: ["42"], ...expected });
     });
   }
+  test("production rollout needs --confirm-production (except --halt)", async () => {
+    for (const flag of ["--fraction 0.5", "--resume", "--complete"]) {
+      const f = fakePlay({ tracks: prod });
+      await expect(run(["rollout", ...PKG, "--track", "production", "--vc", "42", ...flag.split(" ")], deps(f.play)))
+        .rejects.toThrow("confirm-production");
+      expect(f.calls).toEqual([]);   // refused before any API call
+    }
+  });
+  test("production track matching is case-insensitive", async () => {
+    for (const track of ["Production", "PRODUCTION"]) {
+      const f = fakePlay({ tracks: prod });
+      await expect(run(["rollout", ...PKG, "--track", track, "--vc", "42", "--complete"], deps(f.play)))
+        .rejects.toThrow("confirm-production");
+      expect(f.calls).toEqual([]);
+    }
+  });
   test("unknown version code fails and the edit is deleted", async () => {
     const f = fakePlay({ tracks: prod });
     await expect(run(["rollout", ...PKG, "--track", "production", "--vc", "9", "--halt"], deps(f.play))).rejects.toThrow("vc 9");
@@ -237,5 +266,85 @@ describe("arguments", () => {
     const d = deps(null);
     await run(["--help"], d);
     expect(d.out[0]).toContain("usage: bun play-api.ts");
+  });
+});
+
+describe("production guard coverage", () => {
+  test("promote to Production (any case) needs --confirm-production", async () => {
+    for (const track of ["Production", "PRODUCTION"]) {
+      const f = fakePlay();
+      await expect(run(["promote", ...PKG, "--vc", "5", "--track", track], deps(f.play)))
+        .rejects.toThrow("confirm-production");
+      expect(f.calls).toEqual([]);
+    }
+    const ok = fakePlay();
+    await run(["promote", ...PKG, "--vc", "5", "--track", "Production", "--confirm-production"], deps(ok.play));
+    expect(ok.names().at(-1)).toBe("edits.commit");
+  });
+
+  test("release-notes on production needs --confirm-production", async () => {
+    const f = fakePlay({ tracks: { Production: [{ status: "completed", versionCodes: ["3"] }] } });
+    await expect(run(["release-notes", ...PKG, "--track", "Production", "--notes-en", "x"], deps(f.play)))
+      .rejects.toThrow("confirm-production");
+    expect(f.calls).toEqual([]);
+  });
+});
+
+describe("flag validation", () => {
+  test("listing-set --lang rejects a comma list", async () => {
+    const f = fakePlay();
+    await expect(run(["listing-set", ...PKG, "--lang", "en-US,tr-TR"], deps(f.play)))
+      .rejects.toThrow("single language");
+    expect(f.calls).toEqual([]);
+  });
+
+  test("--fraction with --status other than inProgress is a usage error", async () => {
+    const f = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "alpha", "--status", "completed", "--fraction", "0.5"], deps(f.play)))
+      .rejects.toThrow("--fraction only applies");
+    expect(f.calls).toEqual([]);
+  });
+});
+
+describe("image sha1 readback", () => {
+  const args = ["images-set", "--package", "com.example.app", "--lang", "en-US", "--type", "icon", "--files", "a.png"];
+  const sha1OfA = createHash("sha1").update("A").digest("hex");
+  test("matching sha1 commits", async () => {
+    const f = fakePlay({ imageSha1: sha1OfA });
+    await run(args, deps(f.play, { "a.png": "A" }));
+    expect(f.names().at(-1)).toBe("edits.commit");
+  });
+  test("mismatched sha1 aborts before commit; edit deleted", async () => {
+    const f = fakePlay({ imageSha1: "0".repeat(40) });
+    await expect(run(args, deps(f.play, { "a.png": "A" }))).rejects.toThrow("sha1 mismatch");
+    expect(f.names()).not.toContain("edits.commit");
+    expect(f.names().at(-1)).toBe("edits.delete");
+  });
+});
+
+describe("version & misc", () => {
+  test("version / --version / -v print VERSION without touching the API", async () => {
+    for (const argv of [["version"], ["--version"], ["-v"]]) {
+      const f = fakePlay();
+      const d = deps(f.play);
+      await run(argv, d);
+      expect(d.out).toEqual([VERSION]);
+      expect(f.calls).toEqual([]);
+    }
+  });
+
+  test("a failed edits.delete is reported, not mis-logged as deleted", async () => {
+    const f = fakePlay({ failDelete: "boom" });
+    const d = deps(f.play);
+    await run(["tracks", "--package", "com.example.app"], d);
+    expect(d.out.at(-1)).toContain("could not be deleted");
+    expect(d.out.at(-1)).not.toContain("deleted (nothing published)");
+  });
+
+  test("parseDotenv strips inline comments on unquoted values only", () => {
+    const env = parseDotenv(
+      'A=1 # trailing\nB="x # kept"\nC=a#b\nexport D= 2\n#E=skip\nEMPTY=',
+    );
+    expect(env).toEqual({ A: "1", B: "x # kept", C: "a#b", D: "2", EMPTY: "" });
   });
 });

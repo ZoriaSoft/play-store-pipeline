@@ -8,6 +8,8 @@ release notes in any language, edit the store listing, replace screenshots / fea
 many locales in one atomic edit (with sha1 readback), submit the Data safety form as CSV, read testers, read
 and reply to reviews. Also documents exactly which Console tasks the API **cannot** do.
 
+<p align="center"><img src="docs/assets/how-it-works.svg" alt="play-store-pipeline: one CLI drives a single Play edit — open, apply, validate, commit — against internal, alpha and production tracks" width="100%"></p>
+
 ```text
 $ bun play-api.ts tracks --package com.example.app
 edit 01234567890123456789
@@ -17,7 +19,7 @@ edit 01234567890123456789 deleted (nothing published)
 ```
 
 - **Safe by default:** read-only commands discard their edit; `--dry-run` prints the plan; `--validate-only`
-  runs Play's own validation and discards; production needs `--confirm-production`.
+  runs Play's own validation and discards; production writes need `--confirm-production` (`rollout --halt` is exempt — an emergency stop stays one command).
 - **One edit per invocation**, validated before commit, deleted on any failure — no half-applied changes.
 - **No browser automation, no scraping** — only the official API with a service account.
 - Single dependency: [`googleapis`](https://www.npmjs.com/package/googleapis).
@@ -74,7 +76,7 @@ bun play-api.ts upload  $P --aab app-release.aab --track internal --notes en-US=
 bun play-api.ts upload  $P --aab app-release.aab --track internal --notes en-US="Bug fixes"
 bun play-api.ts promote $P --vc 27 --track alpha
 bun play-api.ts promote $P --vc 27 --track production --fraction 0.1 --confirm-production
-bun play-api.ts rollout $P --track production --vc 27 --complete
+bun play-api.ts rollout $P --track production --vc 27 --complete --confirm-production
 bun play-api.ts images-batch $P --spec images.json          # see examples/images.example.json
 bun play-api.ts data-safety  $P --csv data-safety.csv       # see examples/data-safety.example.csv
 bun play-api.ts reviews $P --max 20

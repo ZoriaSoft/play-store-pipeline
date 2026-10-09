@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { extname, resolve } from "node:path";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 
 export class UsageError extends Error {}
 
@@ -26,7 +26,7 @@ export interface Deps {
 
 export const TRACKS_HINT = "internal | alpha (closed) | beta (open) | production | <custom closed track name>";
 const BOOL_FLAGS = new Set(["dry-run", "validate-only", "not-sent-for-review", "halt", "resume", "complete",
-  "confirm-production", "help"]);
+  "confirm-production", "help", "version"]);
 const IMAGE_TYPES = new Set(["phoneScreenshots", "sevenInchScreenshots", "tenInchScreenshots", "tvScreenshots",
   "wearScreenshots", "featureGraphic", "promoGraphic", "icon", "tvBanner"]);
 const LANG_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
@@ -81,6 +81,7 @@ export function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-h") { bools.add("help"); continue; }
+    if (a === "-v") { bools.add("version"); continue; }
     if (!a.startsWith("--")) {
       if (!cmd) { cmd = a; continue; }
       throw new UsageError(`unexpected argument: ${a}`);
@@ -99,6 +100,21 @@ export function parseArgs(argv: string[]): Args {
 }
 
 const get = (a: Args, k: string) => a.values.get(k)?.at(-1);
+
+/** Parse a dotenv file body: KEY=value lines, optional `export`, `#` comments.
+ *  Unquoted values drop a trailing ` #comment`; quoted values keep it. */
+export function parseDotenv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trimStart().startsWith("#")) continue;
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    let v = m[2];
+    const quoted = /^(['"])([\s\S]*)\1$/.exec(v);
+    out[m[1]] = quoted ? quoted[2] : v.replace(/\s+#.*$/, "");
+  }
+  return out;
+}
 function need(a: Args, ...keys: string[]): string[] {
   const missing = keys.filter((k) => !get(a, k));
   if (missing.length) throw new UsageError(`${a.cmd}: missing ${missing.map((k) => "--" + k).join(", ")}`);
@@ -179,14 +195,21 @@ async function withEdit(deps: Deps, a: Args, pkg: string, write: boolean, fn: (e
     throw e;
   } finally {
     if (!committed) {
-      await play.edits.delete({ ...P, editId }).catch(() => {});
-      log(`edit ${editId} deleted (nothing published)`);
+      try {
+        await play.edits.delete({ ...P, editId });
+        log(`edit ${editId} deleted (nothing published)`);
+      } catch (e) {
+        // a leaked edit expires on its own (Play auto-deletes after ~48h);
+        // first line only — API errors can embed request details
+        const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
+        log(`edit ${editId} could not be deleted: ${msg} — it expires on its own`);
+      }
     }
   }
 }
 
 function productionGate(a: Args, track: string) {
-  if (track === "production" && !a.bools.has("confirm-production")) {
+  if (track.toLowerCase() === "production" && !a.bools.has("confirm-production")) {
     throw new UsageError("production release: test on internal/alpha first, then re-run with --confirm-production");
   }
 }
@@ -194,6 +217,9 @@ function productionGate(a: Args, track: string) {
 function releaseBody(a: Args, deps: Deps, vc: string) {
   const status = get(a, "status") ?? (get(a, "fraction") ? "inProgress" : "completed");
   if (!["completed", "draft", "inProgress", "halted"].includes(status)) throw new UsageError("--status: completed | draft | inProgress | halted");
+  if (status !== "inProgress" && get(a, "fraction") !== undefined) {
+    throw new UsageError("--fraction only applies to --status inProgress");
+  }
   const rel: Record<string, unknown> = { versionCodes: [vc], status };
   if (status === "inProgress") rel.userFraction = fraction(need(a, "fraction")[0]);
   const notes = releaseNotes(a, deps);
@@ -204,8 +230,8 @@ function releaseBody(a: Args, deps: Deps, vc: string) {
 // ---- commands -----------------------------------------------------------------------------------
 export async function run(argv: string[], deps: Deps): Promise<void> {
   const a = parseArgs(argv);
+  if (a.cmd === "version" || a.bools.has("version")) { deps.log(VERSION); return; }
   if (a.bools.has("help") || !a.cmd || a.cmd === "help") { deps.log(USAGE); return; }
-  if (a.cmd === "version" || a.cmd === "--version") { deps.log(VERSION); return; }
   const [pkg] = need(a, "package");
   const { play, log } = deps;
   const P = { packageName: pkg };
@@ -233,6 +259,7 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
 
     case "listing-set": {
       const [language] = need(a, "lang");
+      if (language.includes(",")) throw new UsageError("--lang takes a single language code (use one run per language)");
       langs(language);
       const fullFile = get(a, "full-file");
       const full = fullFile ? deps.readFile(fullFile).toString("utf8") : undefined;
@@ -289,9 +316,15 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
         for (const e of spec) {
           await play.edits.images.deleteall({ ...P, editId, language: e.lang, imageType: e.type });
           for (const f of e.files) {
+            const want = createHash("sha1").update(deps.readFile(f)).digest("hex");
             const r = await play.edits.images.upload({ ...P, editId, language: e.lang, imageType: e.type,
               media: { mimeType: mime(f), body: deps.openStream(resolve(f)) } });
             log(`✓ upload ${e.lang} ${e.type} ${f} → sha1=${r.data.image?.sha1}`);
+            const got = r.data.image?.sha1;
+            if (got && got !== want) {
+              // corrupt upload → throw before commit; the edit is deleted
+              throw new UsageError(`sha1 mismatch for ${f}: remote ${got} != local ${want}`);
+            }
           }
         }
       });
@@ -328,6 +361,7 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
 
     case "release-notes": {
       const [track] = need(a, "track");
+      productionGate(a, track);
       const notes = releaseNotes(a, deps);
       if (!notes.length) throw new UsageError("release-notes: give at least one --notes LANG=TEXT");
       return withEdit(deps, a, pkg, true, async (editId) => {
@@ -347,6 +381,8 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
       const status = a.bools.has("halt") ? "halted" : a.bools.has("complete") ? "completed" : "inProgress";
       const f = get(a, "fraction") ? fraction(get(a, "fraction")!) : undefined;
       if (status === "inProgress" && f === undefined && !a.bools.has("resume")) throw new UsageError("rollout: --fraction F, --resume, --halt or --complete");
+      // --halt is exempt: an emergency stop must stay a single command.
+      if (!a.bools.has("halt")) productionGate(a, track);
       return withEdit(deps, a, pkg, true, async (editId) => {
         const t = (await play.edits.tracks.get({ ...P, editId, track })).data;
         const rel = (t.releases ?? []).find((r: any) => (r.versionCodes ?? []).includes(String(vc)));

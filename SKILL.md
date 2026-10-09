@@ -48,7 +48,8 @@ bun play-api.ts tracks        --package P
 bun play-api.ts upload        --package P --aab app.aab --track internal [--notes en-US="…" ...]
 bun play-api.ts promote       --package P --vc N --track alpha [--notes …] [--fraction F --confirm-production]
 bun play-api.ts release-notes --package P --track alpha --notes en-US="…" --notes tr-TR="…"
-bun play-api.ts rollout       --package P --track production --vc N (--fraction 0.2 | --halt | --resume | --complete)
+bun play-api.ts rollout       --package P --track production --vc N (--fraction 0.2 | --resume | --complete) [--confirm-production]
+                                              # --halt is exempt from --confirm-production (emergency stop)
 bun play-api.ts listing-get   --package P [--lang en-US]
 bun play-api.ts listing-set   --package P --lang en-US [--title T] [--short S] [--full-file F] [--video URL]
 bun play-api.ts images-list   --package P [--lang en-US,tr-TR] [--types icon,featureGraphic,phoneScreenshots]
@@ -75,15 +76,16 @@ bun play-api.ts upload  --package $PKG --aab build/app-release.aab --track inter
 bun play-api.ts promote --package $PKG --vc 27 --track alpha --notes en-US="Bug fixes"
 # 3) production, staged
 bun play-api.ts promote --package $PKG --vc 27 --track production --fraction 0.1 --confirm-production
-bun play-api.ts rollout --package $PKG --track production --vc 27 --fraction 0.5
-bun play-api.ts rollout --package $PKG --track production --vc 27 --complete      # or --halt / --resume
+bun play-api.ts rollout --package $PKG --track production --vc 27 --fraction 0.5 --confirm-production
+bun play-api.ts rollout --package $PKG --track production --vc 27 --complete --confirm-production
+bun play-api.ts rollout --package $PKG --track production --vc 27 --halt    # emergency: no flag needed
 bun play-api.ts tracks  --package $PKG                                            # readback
 ```
 
 - Track ids: `internal`, `alpha` (closed), `beta` (open), `production`, plus custom closed tracks by name.
 - `upload` / `promote` **replace** the releases on the target track with one release (status `completed`,
   or `inProgress` + `userFraction` with `--fraction`, or `--status draft`).
-- Uploading or promoting straight to production requires `--confirm-production`.
+- Writing to production requires `--confirm-production` (upload, promote, release-notes, rollout; matching is case-insensitive). Only `rollout --halt` is exempt — an emergency stop must stay a single command.
 - A versionCode can be uploaded **once per app, forever** (even a discarded draft burns it) — promote instead.
 - Before uploading, check the signature: `keytool -printcert -jarfile app-release.aab` must show your
   **upload** certificate (not a debug one); a wrong key is rejected by Play.

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.1 — 2026-10-09 — pre-release hardening fixes
+
+- **Production guard is case-insensitive** and now also covers `release-notes`
+  and `rollout`: any write to a production track requires
+  `--confirm-production`. `rollout --halt` is the single exempt command —
+  an emergency stop must stay one command.
+- **`version`, `--version` and `-v` print the version** before credentials are
+  loaded (previously `--version`/`-v` died on "credentials missing" or
+  "needs a value").
+- **Failed `edits.delete` is reported honestly** — the log no longer claims
+  "deleted (nothing published)" when the delete call itself failed.
+- **`listing-set --lang` rejects comma lists** — it takes a single language
+  code (a comma-joined value used to reach the API as an invalid code).
+- **Image uploads compare the API-returned sha1 against the local file**;
+  a mismatch aborts before commit (edit deleted, nothing published).
+- **`--fraction` with `--status` other than `inProgress` is a usage error**
+  instead of being silently ignored.
+- **`.env` loader strips ` #comment` tails** on unquoted values (quoted
+  values are unchanged).
+
 ## 1.0.0 — 2026-10-08 — first public release
 
 - One CLI (`play-api.ts`) for tracks, upload, promote, staged rollout, release notes (any language), store

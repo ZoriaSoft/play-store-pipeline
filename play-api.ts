@@ -8,15 +8,13 @@
 // A `.env` file ($PLAY_ENV_FILE, else next to this script) only fills variables that are not set yet.
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { run, UsageError, USAGE } from "./src/commands.ts";
+import { run, UsageError, USAGE, parseDotenv } from "./src/commands.ts";
 
 function loadEnvFile() {
   const file = [process.env.PLAY_ENV_FILE, join(import.meta.dir, ".env")].find((p) => p && existsSync(p));
   if (!file) return;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-    if (line.trimStart().startsWith("#")) continue;
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
+  for (const [k, v] of Object.entries(parseDotenv(readFileSync(file, "utf8")))) {
+    if (process.env[k] === undefined) process.env[k] = v;
   }
 }
 
@@ -40,10 +38,13 @@ async function client() {
 
 loadEnvFile();
 const argv = process.argv.slice(2);
-const wantsHelp = !argv.length || argv.includes("--help") || argv.includes("-h") || argv[0] === "help" || argv[0] === "version";
+const wantsHelp = !argv.length || argv.includes("--help") || argv.includes("-h") || argv[0] === "help";
+// version works without credentials (and before googleapis is even loaded)
+const wantsVersion = argv[0] === "version" || argv.includes("--version") || argv.includes("-v");
+const noClient = wantsHelp || wantsVersion;
 try {
   await run(argv, {
-    play: wantsHelp ? null : await client(),
+    play: noClient ? null : await client(),
     log: (line) => console.log(line),
     readFile: (p) => readFileSync(p),
     fileSize: (p) => statSync(p).size,
