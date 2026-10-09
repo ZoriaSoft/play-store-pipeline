@@ -82,9 +82,9 @@
     <rect x="786" y="152" width="96" height="52" rx="10" fill="#161b22" stroke="#3fb950"/>
     <text class="cd" x="834" y="184" text-anchor="middle" fill="#3fb950">commit</text>
     <!-- failure branch -->
-    <path class="bad" d="M 716 204 L 716 236 L 742 236" stroke-dasharray="4 4"/>
-    <rect x="744" y="216" width="200" height="40" rx="8" fill="#161b22" stroke="#f85149" stroke-opacity="0.7"/>
-    <text class="cd" x="844" y="241" text-anchor="middle" fill="#f85149">any failure → deleted</text>
+    <path class="bad" d="M 716 204 L 716 216" stroke-dasharray="4 4"/>
+    <rect x="570" y="216" width="200" height="40" rx="8" fill="#161b22" stroke="#f85149" stroke-opacity="0.7"/>
+    <text class="cd" x="670" y="241" text-anchor="middle" fill="#f85149">any failure → deleted</text>
     <path class="wire" d="M 430 276 L 440 178"/>
     <path class="flow" d="M 430 276 L 440 178"/>
   </g>
@@ -122,9 +122,9 @@
       <text class="cd" x="1052" y="253" text-anchor="middle" fill="#e6edf3">AAB vc 27</text>
     </g>
     <!-- staged rollout bar on production lane -->
-    <rect x="1004" y="414" width="148" height="14" rx="7" fill="#1c232c" stroke="#3a4450"/>
-    <rect class="rollbar" x="1006" y="416" width="144" height="10" rx="5" fill="#34a853"/>
-    <text class="cd" x="1136" y="446" text-anchor="end" fill="#5b6672">10% → 100%</text>
+    <rect x="1004" y="424" width="148" height="14" rx="7" fill="#1c232c" stroke="#3a4450"/>
+    <rect class="rollbar" x="1006" y="426" width="144" height="10" rx="5" fill="#34a853"/>
+    <text class="cd" x="1136" y="456" text-anchor="end" fill="#5b6672">10% → 100%</text>
   </g>
 
   <!-- bottom: safety chips -->
