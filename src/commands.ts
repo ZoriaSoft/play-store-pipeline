@@ -74,6 +74,28 @@ export interface Args {
   bools: Set<string>;
 }
 
+const COMMON_BOOL_FLAGS = ["dry-run", "validate-only", "not-sent-for-review", "confirm-production", "help", "version"];
+const COMMAND_VALUE_FLAGS: Record<string, string[]> = {
+  tracks: [],
+  "listing-get": ["lang"],
+  "listing-set": ["lang", "title", "short", "full-file", "video"],
+  "images-list": ["lang", "types"],
+  "images-set": ["lang", "type", "files"],
+  "images-batch": ["spec"],
+  upload: ["aab", "track", "notes", "notes-en", "notes-tr", "notes-file", "status", "fraction"],
+  promote: ["vc", "track", "notes", "notes-en", "notes-tr", "notes-file", "status", "fraction"],
+  "release-notes": ["track", "notes", "notes-en", "notes-tr", "notes-file"],
+  rollout: ["track", "vc", "fraction"],
+  testers: ["track"],
+  details: ["contact-email", "contact-website", "default-lang"],
+  "data-safety": ["csv"],
+  reviews: ["max"],
+  "review-reply": ["review-id", "text"],
+};
+const COMMAND_BOOL_FLAGS: Record<string, string[]> = {
+  rollout: ["halt", "resume", "complete"],
+};
+
 export function parseArgs(argv: string[]): Args {
   const values = new Map<string, string[]>();
   const bools = new Set<string>();
@@ -89,12 +111,27 @@ export function parseArgs(argv: string[]): Args {
     let key = a.slice(2), value: string | undefined;
     const eq = key.indexOf("=");
     if (eq > 0) { value = key.slice(eq + 1); key = key.slice(0, eq); }   // --notes=en-US=text → notes, "en-US=text"
-    if (BOOL_FLAGS.has(key)) { bools.add(key); continue; }
+    if (BOOL_FLAGS.has(key)) {
+      if (value !== undefined) throw new UsageError(`--${key} takes no value`);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) throw new UsageError(`--${key} takes no value`);
+      bools.add(key); continue;
+    }
     if (value === undefined) {
       value = argv[++i];
       if (value === undefined || (value.startsWith("--") && value.length > 2)) throw new UsageError(`--${key} needs a value`);
     }
     values.set(key, [...(values.get(key) ?? []), value]);
+  }
+  if (cmd && Object.hasOwn(COMMAND_VALUE_FLAGS, cmd)) {
+    const allowedValues = ["package", ...COMMAND_VALUE_FLAGS[cmd]];
+    for (const k of values.keys()) {
+      if (!allowedValues.includes(k)) throw new UsageError(`unknown option --${k} for ${cmd} (see --help)`);
+    }
+    const allowedBools = [...COMMON_BOOL_FLAGS, ...(COMMAND_BOOL_FLAGS[cmd] ?? [])];
+    for (const k of bools) {
+      if (!allowedBools.includes(k)) throw new UsageError(`unknown option --${k} for ${cmd} (see --help)`);
+    }
   }
   return { cmd, values, bools };
 }

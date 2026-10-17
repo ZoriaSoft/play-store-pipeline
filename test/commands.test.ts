@@ -281,6 +281,25 @@ describe("arguments", () => {
     await run(["--help"], d);
     expect(d.out[0]).toContain("usage: bun play-api.ts");
   });
+  test("unknown option '--validate-onyl yes' is a usage error before any API call", async () => {
+    const f = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "alpha", "--validate-onyl", "yes"], deps(f.play)))
+      .rejects.toBeInstanceOf(UsageError);
+    expect(f.calls).toEqual([]);
+    expect(() => parseArgs(["promote", ...PKG, "--vc", "5", "--track", "alpha", "--validate-onyl", "yes"]))
+      .toThrow("unknown option --validate-onyl");
+  });
+  test("'--confirm-production=false' is rejected and never counts as confirmation", async () => {
+    const f = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "production", "--confirm-production=false"], deps(f.play)))
+      .rejects.toBeInstanceOf(UsageError);
+    expect(f.calls).toEqual([]);
+    expect(() => parseArgs(["promote", "--confirm-production=false"])).toThrow("takes no value");
+    const f2 = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "production", "--confirm-production", "false"], deps(f2.play)))
+      .rejects.toThrow("takes no value");
+    expect(f2.calls).toEqual([]);
+  });
 });
 
 describe("production guard coverage", () => {
