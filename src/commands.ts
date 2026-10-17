@@ -14,6 +14,15 @@ export const VERSION = "1.0.1";
 
 export class UsageError extends Error {}
 
+export const COMMIT_UNCERTAIN_EXIT_CODE = 3;
+export class CommitUncertainError extends Error {
+  readonly exitCode = COMMIT_UNCERTAIN_EXIT_CODE;
+  constructor(message: string) {
+    super(message);
+    this.name = "CommitUncertainError";
+  }
+}
+
 export interface Deps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   play: any; // google.androidpublisher({ version: "v3" }) or a fake with the same shape
@@ -210,12 +219,16 @@ async function withEdit(deps: Deps, a: Args, pkg: string, write: boolean, fn: (e
   const editId: string = (await play.edits.insert(P)).data.id;
   log(`edit ${editId}`);
   let committed = false;
+  let commitAttempted = false;
+  let primaryError: unknown;
+  let hasPrimaryError = false;
   try {
     await fn(editId);
     if (write && !a.bools.has("dry-run")) {
       await play.edits.validate({ ...P, editId });
       log("✓ edits.validate");
       if (!a.bools.has("validate-only")) {
+        commitAttempted = true;
         const r = await play.edits.commit({ ...P, editId,
           ...(a.bools.has("not-sent-for-review") ? { changesNotSentForReview: true } : {}) });
         committed = true;
@@ -223,25 +236,42 @@ async function withEdit(deps: Deps, a: Args, pkg: string, write: boolean, fn: (e
       }
     }
   } catch (e) {
+    hasPrimaryError = true;
+    primaryError = e;
     const msg = String((e as Error)?.message ?? e);
     if (/changesNotSentForReview/i.test(msg)) {
       log("hint: re-run with --not-sent-for-review, then send the changes for review in Play Console → Publishing overview");
     } else if (/expired|has been deleted/i.test(msg)) {
       log("hint: another edit was opened for this app meanwhile (parallel script or Console) — serialize Play calls and re-run");
     }
-    throw e;
-  } finally {
-    if (!committed) {
-      try {
-        await play.edits.delete({ ...P, editId });
+  }
+  if (!committed) {
+    let deleteError: unknown;
+    let hasDeleteError = false;
+    try {
+      await play.edits.delete({ ...P, editId });
+      if (commitAttempted) {
+        log(`edit ${editId} commit outcome uncertain — verify in Play Console before retrying; do not assume nothing was published`);
+      } else {
         log(`edit ${editId} deleted (nothing published)`);
-      } catch (e) {
-        // a leaked edit expires on its own (Play auto-deletes after ~48h);
-        // first line only — API errors can embed request details
-        const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
-        log(`edit ${editId} could not be deleted: ${msg} — it expires on its own`);
+      }
+    } catch (e) {
+      hasDeleteError = true;
+      deleteError = e;
+      // a leaked edit expires on its own (Play auto-deletes after ~48h);
+      // first line only — API errors can embed request details
+      const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      log(`edit ${editId} could not be deleted: ${msg} — it expires on its own`);
+      if (commitAttempted) {
+        log(`edit ${editId} commit outcome uncertain — verify in Play Console before retrying; do not assume nothing was published`);
       }
     }
+    if (commitAttempted && hasPrimaryError) {
+      const msg = primaryError instanceof Error ? primaryError.message.split("\n")[0] : String(primaryError);
+      throw new CommitUncertainError(`edits.commit outcome uncertain for edit ${editId}: ${msg} — verify in Play Console before retrying; do not assume nothing was published`);
+    }
+    if (hasPrimaryError) throw primaryError;
+    if (hasDeleteError) throw deleteError;
   }
 }
 

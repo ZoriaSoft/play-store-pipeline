@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
+import { CommitUncertainError, COMMIT_UNCERTAIN_EXIT_CODE, parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
 
 // A fake androidpublisher client that records every call as "path(args)".
 function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string } = {}) {
@@ -355,6 +355,35 @@ describe("image sha1 readback", () => {
   });
 });
 
+describe("cleanup & uncertain commit", () => {
+  test("edits.delete failure after a read surfaces as an error, not success", async () => {
+    const f = fakePlay({ tracks: { alpha: [{ status: "completed", versionCodes: ["7"] }] }, failDelete: "delete boom" });
+    const d = deps(f.play);
+    await expect(run(["tracks", ...PKG], d)).rejects.toThrow("delete boom");
+    expect(d.out.join("\n")).toContain("could not be deleted");
+    expect(d.out.join("\n")).not.toContain("deleted (nothing published)");
+  });
+
+  test("lost commit response reports uncertain outcome with a distinct exit code and no retry", async () => {
+    const f = fakePlay({ tracks: { alpha: [{ status: "completed", versionCodes: ["7"] }] }, failCommit: "socket hang up" });
+    const d = deps(f.play);
+    let caught: unknown;
+    try {
+      await run(["release-notes", ...PKG, "--track", "alpha", "--notes-en", "x"], d);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CommitUncertainError);
+    expect((caught as CommitUncertainError).exitCode).toBe(COMMIT_UNCERTAIN_EXIT_CODE);
+    expect(COMMIT_UNCERTAIN_EXIT_CODE).not.toBe(1);
+    expect(COMMIT_UNCERTAIN_EXIT_CODE).not.toBe(2);
+    expect(d.out.join("\n")).toContain("commit outcome uncertain");
+    expect(d.out.join("\n")).toContain("Play Console");
+    expect(d.out.join("\n")).not.toContain("nothing published");
+    expect(f.calls.filter((c) => c.name === "edits.commit").length).toBe(1);
+  });
+});
+
 describe("version & misc", () => {
   test("version / --version / -v print VERSION without touching the API", async () => {
     for (const argv of [["version"], ["--version"], ["-v"]]) {
@@ -369,9 +398,9 @@ describe("version & misc", () => {
   test("a failed edits.delete is reported, not mis-logged as deleted", async () => {
     const f = fakePlay({ failDelete: "boom" });
     const d = deps(f.play);
-    await run(["tracks", "--package", "com.example.app"], d);
-    expect(d.out.at(-1)).toContain("could not be deleted");
-    expect(d.out.at(-1)).not.toContain("deleted (nothing published)");
+    await expect(run(["tracks", "--package", "com.example.app"], d)).rejects.toThrow("boom");
+    expect(d.out.join("\n")).toContain("could not be deleted");
+    expect(d.out.join("\n")).not.toContain("deleted (nothing published)");
   });
 
   test("parseDotenv strips inline comments on unquoted values only", () => {
