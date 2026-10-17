@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { CommitUncertainError, COMMIT_UNCERTAIN_EXIT_CODE, parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
 
 // A fake androidpublisher client that records every call as "path(args)".
-function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string } = {}) {
+function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string; omitImageSha1?: boolean; imageListSha1?: string } = {}) {
   const calls: { name: string; args: any }[] = [];
   const tracks: Record<string, any[]> = JSON.parse(JSON.stringify(state.tracks ?? {}));
   const rec = (name: string, result: any = {}) => async (args: any) => { calls.push({ name, args }); return { data: result, status: 200 }; };
@@ -34,12 +34,13 @@ function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: stri
         get: rec("listings.get", { language: "en-US", title: "Old title", shortDescription: "Old short", fullDescription: "Old full" }),
         update: rec("listings.update"),
       },
-      images: { list: rec("images.list", { images: [{ id: "i1", sha1: "s1", sha256: "s256" }] }),
+      images: { list: rec("images.list", { images: [{ id: "i1", sha1: state.imageListSha1 ?? "s1", sha256: "s256" }] }),
         deleteall: rec("images.deleteall"),
         upload: async (args: any) => {
           calls.push({ name: "images.upload", args });
           const sha1 = state.imageSha1
             ?? createHash("sha1").update(args.media?.body ?? "").digest("hex");
+          if (state.omitImageSha1) return { data: { image: {} }, status: 200 };
           return { data: { image: { sha1 } }, status: 200 };
         } },
       testers: { get: rec("testers.get", { googleGroups: ["g@example.com"] }) },
@@ -352,6 +353,25 @@ describe("image sha1 readback", () => {
     await expect(run(args, deps(f.play, { "a.png": "A" }))).rejects.toThrow("sha1 mismatch");
     expect(f.names()).not.toContain("edits.commit");
     expect(f.names().at(-1)).toBe("edits.delete");
+  });
+  test("images-batch rejects a duplicate (lang, type) target before any API call", async () => {
+    const files = { "a.png": "A", "b.png": "B", "spec.json": JSON.stringify([
+      { lang: "en-US", type: "icon", files: ["a.png"] },
+      { lang: "en-US", type: "icon", files: ["b.png"] }]) };
+    const f = fakePlay();
+    await expect(run(["images-batch", ...PKG, "--spec", "spec.json"], deps(f.play, files))).rejects.toThrow("duplicate image target");
+    expect(f.calls).toEqual([]);
+  });
+  test("missing upload sha1 is verified via images.list; unverifiable aborts before commit and deletes the edit", async () => {
+    const unverifiable = fakePlay({ omitImageSha1: true });
+    await expect(run(args, deps(unverifiable.play, { "a.png": "A" }))).rejects.toThrow("could not be verified via images.list");
+    expect(unverifiable.names()).toContain("images.list");
+    expect(unverifiable.names()).not.toContain("edits.commit");
+    expect(unverifiable.names().at(-1)).toBe("edits.delete");
+    const verifiable = fakePlay({ omitImageSha1: true, imageListSha1: sha1OfA });
+    await run(args, deps(verifiable.play, { "a.png": "A" }));
+    expect(verifiable.names()).toContain("images.list");
+    expect(verifiable.names().at(-1)).toBe("edits.commit");
   });
 });
 

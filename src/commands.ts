@@ -365,10 +365,16 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
         spec = JSON.parse(deps.readFile(specFile).toString("utf8"));
         if (!Array.isArray(spec) || !spec.length) throw new UsageError("--spec must be a non-empty JSON array");
       }
+      const seenTargets = new Set<string>();
       for (const e of spec) {
         if (!e || typeof e.lang !== "string" || typeof e.type !== "string" || !Array.isArray(e.files) || !e.files.length) {
           throw new UsageError('each spec entry needs {"lang": "...", "type": "...", "files": ["..."]}');
         }
+        const target = `${e.lang}/${e.type}`;
+        if (seenTargets.has(target)) {
+          throw new UsageError(`duplicate image target in spec: ${e.lang} ${e.type} — each (lang, type) may appear only once`);
+        }
+        seenTargets.add(target);
         langs(e.lang);
         if (!IMAGE_TYPES.has(e.type)) throw new UsageError(`unknown image type: ${e.type}`);
         for (const f of e.files) {
@@ -388,9 +394,18 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
               media: { mimeType: mime(f), body: deps.openStream(resolve(f)) } });
             log(`✓ upload ${e.lang} ${e.type} ${f} → sha1=${r.data.image?.sha1}`);
             const got = r.data.image?.sha1;
-            if (got && got !== want) {
-              // corrupt upload → throw before commit; the edit is deleted
-              throw new UsageError(`sha1 mismatch for ${f}: remote ${got} != local ${want}`);
+            if (got) {
+              if (got !== want) {
+                // corrupt upload → throw before commit; the edit is deleted
+                throw new UsageError(`sha1 mismatch for ${f}: remote ${got} != local ${want}`);
+              }
+            } else {
+              const listed = (await play.edits.images.list({ ...P, editId, language: e.lang, imageType: e.type })).data.images ?? [];
+              const verified = listed.some((img: { sha1?: unknown }) => img.sha1 === want);
+              if (!verified) {
+                throw new UsageError(`sha1 missing for ${f} and could not be verified via images.list (expected ${want})`);
+              }
+              log(`✓ upload ${e.lang} ${e.type} ${f} → sha1 verified via images.list ${want}`);
             }
           }
         }
