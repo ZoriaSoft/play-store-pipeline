@@ -245,6 +245,20 @@ describe("not edit-scoped", () => {
     expect(d.out[0]).toContain("last week");
     await expect(run(["review-reply", ...PKG, "--review-id", "r", "--text", "x".repeat(351)], d)).rejects.toThrow("350");
   });
+  test("data-safety --validate-only is a usage error and never calls the write API", async () => {
+    const f = fakePlay();
+    const d = deps(f.play, { "ds.csv": `${header}\nPSL_X,,FALSE,REQUIRED,q\n` });
+    await expect(run(["data-safety", ...PKG, "--csv", "ds.csv", "--validate-only"], d)).rejects.toBeInstanceOf(UsageError);
+    expect(f.names()).not.toContain("applications.dataSafety");
+    expect(f.calls).toEqual([]);
+  });
+  test("review-reply --validate-only is a usage error and never calls the write API", async () => {
+    const f = fakePlay();
+    const d = deps(f.play);
+    await expect(run(["review-reply", ...PKG, "--review-id", "r1", "--text", "Thanks", "--validate-only"], d)).rejects.toBeInstanceOf(UsageError);
+    expect(f.names()).not.toContain("reviews.reply");
+    expect(f.calls).toEqual([]);
+  });
 });
 
 describe("arguments", () => {

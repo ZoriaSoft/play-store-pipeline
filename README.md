@@ -107,7 +107,7 @@ bun run typecheck
 
 - Credentials are read from the environment, a git-ignored `.env`, or a git-ignored `service-account.json`; they
   are never printed. Grant the service account only the permissions you use.
-- Every write rehearses cleanly with `--dry-run` and `--validate-only`. Review replies are public.
+- Edit-based writes rehearse cleanly with `--dry-run` and `--validate-only`. `data-safety` and `review-reply` are not edit-based, reject `--validate-only` (use `--dry-run` to preview), and otherwise write for real. Review replies are public.
 
 ## License
 

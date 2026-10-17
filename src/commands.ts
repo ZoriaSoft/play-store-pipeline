@@ -418,6 +418,9 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
     }
 
     case "data-safety": {
+      if (a.bools.has("validate-only")) {
+        throw new UsageError("data-safety: --validate-only is not supported (not an edit-based command; it would submit for real) — use --dry-run to preview");
+      }
       const [file] = need(a, "csv");
       const csv = deps.readFile(file).toString("utf8").replace(/^﻿/, "");
       const rows = csv.trim().split(/\r?\n/);
@@ -446,6 +449,9 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
     }
 
     case "review-reply": {
+      if (a.bools.has("validate-only")) {
+        throw new UsageError("review-reply: --validate-only is not supported (not an edit-based command; it would post a public reply for real) — use --dry-run to preview");
+      }
       const [reviewId, text] = need(a, "review-id", "text");
       if (text.length > 350) throw new UsageError("reply > 350 chars");
       log(`plan reply ${reviewId}: ${text}`);
