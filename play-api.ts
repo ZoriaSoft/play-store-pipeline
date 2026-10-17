@@ -8,7 +8,7 @@
 // A `.env` file ($PLAY_ENV_FILE, else next to this script) only fills variables that are not set yet.
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { run, UsageError, USAGE, parseDotenv } from "./src/commands.ts";
+import { run, UsageError, CommitUncertainError, USAGE, parseDotenv } from "./src/commands.ts";
 
 function loadEnvFile() {
   const file = [process.env.PLAY_ENV_FILE, join(import.meta.dir, ".env")].find((p) => p && existsSync(p));
@@ -56,6 +56,10 @@ try {
     console.error(`error: ${e.message}`);
     if (!argv.length) console.error(USAGE);
     process.exit(2);
+  }
+  if (e instanceof CommitUncertainError) {
+    console.error(`✗ ${e.message}`);
+    process.exit(e.exitCode);
   }
   // googleapis errors carry the API message (and sometimes a list of reasons); never dump credentials
   const err = e as { message?: string; errors?: { message?: string; reason?: string }[]; code?: number };

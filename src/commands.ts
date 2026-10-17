@@ -14,6 +14,15 @@ export const VERSION = "1.0.1";
 
 export class UsageError extends Error {}
 
+export const COMMIT_UNCERTAIN_EXIT_CODE = 3;
+export class CommitUncertainError extends Error {
+  readonly exitCode = COMMIT_UNCERTAIN_EXIT_CODE;
+  constructor(message: string) {
+    super(message);
+    this.name = "CommitUncertainError";
+  }
+}
+
 export interface Deps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   play: any; // google.androidpublisher({ version: "v3" }) or a fake with the same shape
@@ -74,6 +83,28 @@ export interface Args {
   bools: Set<string>;
 }
 
+const COMMON_BOOL_FLAGS = ["dry-run", "validate-only", "not-sent-for-review", "confirm-production", "help", "version"];
+const COMMAND_VALUE_FLAGS: Record<string, string[]> = {
+  tracks: [],
+  "listing-get": ["lang"],
+  "listing-set": ["lang", "title", "short", "full-file", "video"],
+  "images-list": ["lang", "types"],
+  "images-set": ["lang", "type", "files"],
+  "images-batch": ["spec"],
+  upload: ["aab", "track", "notes", "notes-en", "notes-tr", "notes-file", "status", "fraction"],
+  promote: ["vc", "track", "notes", "notes-en", "notes-tr", "notes-file", "status", "fraction"],
+  "release-notes": ["track", "notes", "notes-en", "notes-tr", "notes-file"],
+  rollout: ["track", "vc", "fraction"],
+  testers: ["track"],
+  details: ["contact-email", "contact-website", "default-lang"],
+  "data-safety": ["csv"],
+  reviews: ["max"],
+  "review-reply": ["review-id", "text"],
+};
+const COMMAND_BOOL_FLAGS: Record<string, string[]> = {
+  rollout: ["halt", "resume", "complete"],
+};
+
 export function parseArgs(argv: string[]): Args {
   const values = new Map<string, string[]>();
   const bools = new Set<string>();
@@ -89,12 +120,27 @@ export function parseArgs(argv: string[]): Args {
     let key = a.slice(2), value: string | undefined;
     const eq = key.indexOf("=");
     if (eq > 0) { value = key.slice(eq + 1); key = key.slice(0, eq); }   // --notes=en-US=text → notes, "en-US=text"
-    if (BOOL_FLAGS.has(key)) { bools.add(key); continue; }
+    if (BOOL_FLAGS.has(key)) {
+      if (value !== undefined) throw new UsageError(`--${key} takes no value`);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) throw new UsageError(`--${key} takes no value`);
+      bools.add(key); continue;
+    }
     if (value === undefined) {
       value = argv[++i];
       if (value === undefined || (value.startsWith("--") && value.length > 2)) throw new UsageError(`--${key} needs a value`);
     }
     values.set(key, [...(values.get(key) ?? []), value]);
+  }
+  if (cmd && Object.hasOwn(COMMAND_VALUE_FLAGS, cmd)) {
+    const allowedValues = ["package", ...COMMAND_VALUE_FLAGS[cmd]];
+    for (const k of values.keys()) {
+      if (!allowedValues.includes(k)) throw new UsageError(`unknown option --${k} for ${cmd} (see --help)`);
+    }
+    const allowedBools = [...COMMON_BOOL_FLAGS, ...(COMMAND_BOOL_FLAGS[cmd] ?? [])];
+    for (const k of bools) {
+      if (!allowedBools.includes(k)) throw new UsageError(`unknown option --${k} for ${cmd} (see --help)`);
+    }
   }
   return { cmd, values, bools };
 }
@@ -173,12 +219,16 @@ async function withEdit(deps: Deps, a: Args, pkg: string, write: boolean, fn: (e
   const editId: string = (await play.edits.insert(P)).data.id;
   log(`edit ${editId}`);
   let committed = false;
+  let commitAttempted = false;
+  let primaryError: unknown;
+  let hasPrimaryError = false;
   try {
     await fn(editId);
     if (write && !a.bools.has("dry-run")) {
       await play.edits.validate({ ...P, editId });
       log("✓ edits.validate");
       if (!a.bools.has("validate-only")) {
+        commitAttempted = true;
         const r = await play.edits.commit({ ...P, editId,
           ...(a.bools.has("not-sent-for-review") ? { changesNotSentForReview: true } : {}) });
         committed = true;
@@ -186,25 +236,42 @@ async function withEdit(deps: Deps, a: Args, pkg: string, write: boolean, fn: (e
       }
     }
   } catch (e) {
+    hasPrimaryError = true;
+    primaryError = e;
     const msg = String((e as Error)?.message ?? e);
     if (/changesNotSentForReview/i.test(msg)) {
       log("hint: re-run with --not-sent-for-review, then send the changes for review in Play Console → Publishing overview");
     } else if (/expired|has been deleted/i.test(msg)) {
       log("hint: another edit was opened for this app meanwhile (parallel script or Console) — serialize Play calls and re-run");
     }
-    throw e;
-  } finally {
-    if (!committed) {
-      try {
-        await play.edits.delete({ ...P, editId });
+  }
+  if (!committed) {
+    let deleteError: unknown;
+    let hasDeleteError = false;
+    try {
+      await play.edits.delete({ ...P, editId });
+      if (commitAttempted) {
+        log(`edit ${editId} commit outcome uncertain — verify in Play Console before retrying; do not assume nothing was published`);
+      } else {
         log(`edit ${editId} deleted (nothing published)`);
-      } catch (e) {
-        // a leaked edit expires on its own (Play auto-deletes after ~48h);
-        // first line only — API errors can embed request details
-        const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
-        log(`edit ${editId} could not be deleted: ${msg} — it expires on its own`);
+      }
+    } catch (e) {
+      hasDeleteError = true;
+      deleteError = e;
+      // a leaked edit expires on its own (Play auto-deletes after ~48h);
+      // first line only — API errors can embed request details
+      const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      log(`edit ${editId} could not be deleted: ${msg} — it expires on its own`);
+      if (commitAttempted) {
+        log(`edit ${editId} commit outcome uncertain — verify in Play Console before retrying; do not assume nothing was published`);
       }
     }
+    if (commitAttempted && hasPrimaryError) {
+      const msg = primaryError instanceof Error ? primaryError.message.split("\n")[0] : String(primaryError);
+      throw new CommitUncertainError(`edits.commit outcome uncertain for edit ${editId}: ${msg} — verify in Play Console before retrying; do not assume nothing was published`);
+    }
+    if (hasPrimaryError) throw primaryError;
+    if (hasDeleteError) throw deleteError;
   }
 }
 
@@ -298,10 +365,16 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
         spec = JSON.parse(deps.readFile(specFile).toString("utf8"));
         if (!Array.isArray(spec) || !spec.length) throw new UsageError("--spec must be a non-empty JSON array");
       }
+      const seenTargets = new Set<string>();
       for (const e of spec) {
         if (!e || typeof e.lang !== "string" || typeof e.type !== "string" || !Array.isArray(e.files) || !e.files.length) {
           throw new UsageError('each spec entry needs {"lang": "...", "type": "...", "files": ["..."]}');
         }
+        const target = `${e.lang}/${e.type}`;
+        if (seenTargets.has(target)) {
+          throw new UsageError(`duplicate image target in spec: ${e.lang} ${e.type} — each (lang, type) may appear only once`);
+        }
+        seenTargets.add(target);
         langs(e.lang);
         if (!IMAGE_TYPES.has(e.type)) throw new UsageError(`unknown image type: ${e.type}`);
         for (const f of e.files) {
@@ -321,9 +394,18 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
               media: { mimeType: mime(f), body: deps.openStream(resolve(f)) } });
             log(`✓ upload ${e.lang} ${e.type} ${f} → sha1=${r.data.image?.sha1}`);
             const got = r.data.image?.sha1;
-            if (got && got !== want) {
-              // corrupt upload → throw before commit; the edit is deleted
-              throw new UsageError(`sha1 mismatch for ${f}: remote ${got} != local ${want}`);
+            if (got) {
+              if (got !== want) {
+                // corrupt upload → throw before commit; the edit is deleted
+                throw new UsageError(`sha1 mismatch for ${f}: remote ${got} != local ${want}`);
+              }
+            } else {
+              const listed = (await play.edits.images.list({ ...P, editId, language: e.lang, imageType: e.type })).data.images ?? [];
+              const verified = listed.some((img: { sha1?: unknown }) => img.sha1 === want);
+              if (!verified) {
+                throw new UsageError(`sha1 missing for ${f} and could not be verified via images.list (expected ${want})`);
+              }
+              log(`✓ upload ${e.lang} ${e.type} ${f} → sha1 verified via images.list ${want}`);
             }
           }
         }
@@ -418,6 +500,9 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
     }
 
     case "data-safety": {
+      if (a.bools.has("validate-only")) {
+        throw new UsageError("data-safety: --validate-only is not supported (not an edit-based command; it would submit for real) — use --dry-run to preview");
+      }
       const [file] = need(a, "csv");
       const csv = deps.readFile(file).toString("utf8").replace(/^﻿/, "");
       const rows = csv.trim().split(/\r?\n/);
@@ -446,6 +531,9 @@ export async function run(argv: string[], deps: Deps): Promise<void> {
     }
 
     case "review-reply": {
+      if (a.bools.has("validate-only")) {
+        throw new UsageError("review-reply: --validate-only is not supported (not an edit-based command; it would post a public reply for real) — use --dry-run to preview");
+      }
       const [reviewId, text] = need(a, "review-id", "text");
       if (text.length > 350) throw new UsageError("reply > 350 chars");
       log(`plan reply ${reviewId}: ${text}`);

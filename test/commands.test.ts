@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
+import { CommitUncertainError, COMMIT_UNCERTAIN_EXIT_CODE, parseArgs, parseDotenv, releaseNotes, run, UsageError, VERSION, type Deps } from "../src/commands.ts";
 
 // A fake androidpublisher client that records every call as "path(args)".
-function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string } = {}) {
+function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: string; imageSha1?: string; failDelete?: string; omitImageSha1?: boolean; imageListSha1?: string } = {}) {
   const calls: { name: string; args: any }[] = [];
   const tracks: Record<string, any[]> = JSON.parse(JSON.stringify(state.tracks ?? {}));
   const rec = (name: string, result: any = {}) => async (args: any) => { calls.push({ name, args }); return { data: result, status: 200 }; };
@@ -34,12 +34,13 @@ function fakePlay(state: { tracks?: Record<string, unknown[]>; failCommit?: stri
         get: rec("listings.get", { language: "en-US", title: "Old title", shortDescription: "Old short", fullDescription: "Old full" }),
         update: rec("listings.update"),
       },
-      images: { list: rec("images.list", { images: [{ id: "i1", sha1: "s1", sha256: "s256" }] }),
+      images: { list: rec("images.list", { images: [{ id: "i1", sha1: state.imageListSha1 ?? "s1", sha256: "s256" }] }),
         deleteall: rec("images.deleteall"),
         upload: async (args: any) => {
           calls.push({ name: "images.upload", args });
           const sha1 = state.imageSha1
             ?? createHash("sha1").update(args.media?.body ?? "").digest("hex");
+          if (state.omitImageSha1) return { data: { image: {} }, status: 200 };
           return { data: { image: { sha1 } }, status: 200 };
         } },
       testers: { get: rec("testers.get", { googleGroups: ["g@example.com"] }) },
@@ -245,6 +246,20 @@ describe("not edit-scoped", () => {
     expect(d.out[0]).toContain("last week");
     await expect(run(["review-reply", ...PKG, "--review-id", "r", "--text", "x".repeat(351)], d)).rejects.toThrow("350");
   });
+  test("data-safety --validate-only is a usage error and never calls the write API", async () => {
+    const f = fakePlay();
+    const d = deps(f.play, { "ds.csv": `${header}\nPSL_X,,FALSE,REQUIRED,q\n` });
+    await expect(run(["data-safety", ...PKG, "--csv", "ds.csv", "--validate-only"], d)).rejects.toBeInstanceOf(UsageError);
+    expect(f.names()).not.toContain("applications.dataSafety");
+    expect(f.calls).toEqual([]);
+  });
+  test("review-reply --validate-only is a usage error and never calls the write API", async () => {
+    const f = fakePlay();
+    const d = deps(f.play);
+    await expect(run(["review-reply", ...PKG, "--review-id", "r1", "--text", "Thanks", "--validate-only"], d)).rejects.toBeInstanceOf(UsageError);
+    expect(f.names()).not.toContain("reviews.reply");
+    expect(f.calls).toEqual([]);
+  });
 });
 
 describe("arguments", () => {
@@ -266,6 +281,25 @@ describe("arguments", () => {
     const d = deps(null);
     await run(["--help"], d);
     expect(d.out[0]).toContain("usage: bun play-api.ts");
+  });
+  test("unknown option '--validate-onyl yes' is a usage error before any API call", async () => {
+    const f = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "alpha", "--validate-onyl", "yes"], deps(f.play)))
+      .rejects.toBeInstanceOf(UsageError);
+    expect(f.calls).toEqual([]);
+    expect(() => parseArgs(["promote", ...PKG, "--vc", "5", "--track", "alpha", "--validate-onyl", "yes"]))
+      .toThrow("unknown option --validate-onyl");
+  });
+  test("'--confirm-production=false' is rejected and never counts as confirmation", async () => {
+    const f = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "production", "--confirm-production=false"], deps(f.play)))
+      .rejects.toBeInstanceOf(UsageError);
+    expect(f.calls).toEqual([]);
+    expect(() => parseArgs(["promote", "--confirm-production=false"])).toThrow("takes no value");
+    const f2 = fakePlay();
+    await expect(run(["promote", ...PKG, "--vc", "5", "--track", "production", "--confirm-production", "false"], deps(f2.play)))
+      .rejects.toThrow("takes no value");
+    expect(f2.calls).toEqual([]);
   });
 });
 
@@ -320,6 +354,54 @@ describe("image sha1 readback", () => {
     expect(f.names()).not.toContain("edits.commit");
     expect(f.names().at(-1)).toBe("edits.delete");
   });
+  test("images-batch rejects a duplicate (lang, type) target before any API call", async () => {
+    const files = { "a.png": "A", "b.png": "B", "spec.json": JSON.stringify([
+      { lang: "en-US", type: "icon", files: ["a.png"] },
+      { lang: "en-US", type: "icon", files: ["b.png"] }]) };
+    const f = fakePlay();
+    await expect(run(["images-batch", ...PKG, "--spec", "spec.json"], deps(f.play, files))).rejects.toThrow("duplicate image target");
+    expect(f.calls).toEqual([]);
+  });
+  test("missing upload sha1 is verified via images.list; unverifiable aborts before commit and deletes the edit", async () => {
+    const unverifiable = fakePlay({ omitImageSha1: true });
+    await expect(run(args, deps(unverifiable.play, { "a.png": "A" }))).rejects.toThrow("could not be verified via images.list");
+    expect(unverifiable.names()).toContain("images.list");
+    expect(unverifiable.names()).not.toContain("edits.commit");
+    expect(unverifiable.names().at(-1)).toBe("edits.delete");
+    const verifiable = fakePlay({ omitImageSha1: true, imageListSha1: sha1OfA });
+    await run(args, deps(verifiable.play, { "a.png": "A" }));
+    expect(verifiable.names()).toContain("images.list");
+    expect(verifiable.names().at(-1)).toBe("edits.commit");
+  });
+});
+
+describe("cleanup & uncertain commit", () => {
+  test("edits.delete failure after a read surfaces as an error, not success", async () => {
+    const f = fakePlay({ tracks: { alpha: [{ status: "completed", versionCodes: ["7"] }] }, failDelete: "delete boom" });
+    const d = deps(f.play);
+    await expect(run(["tracks", ...PKG], d)).rejects.toThrow("delete boom");
+    expect(d.out.join("\n")).toContain("could not be deleted");
+    expect(d.out.join("\n")).not.toContain("deleted (nothing published)");
+  });
+
+  test("lost commit response reports uncertain outcome with a distinct exit code and no retry", async () => {
+    const f = fakePlay({ tracks: { alpha: [{ status: "completed", versionCodes: ["7"] }] }, failCommit: "socket hang up" });
+    const d = deps(f.play);
+    let caught: unknown;
+    try {
+      await run(["release-notes", ...PKG, "--track", "alpha", "--notes-en", "x"], d);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CommitUncertainError);
+    expect((caught as CommitUncertainError).exitCode).toBe(COMMIT_UNCERTAIN_EXIT_CODE);
+    expect(COMMIT_UNCERTAIN_EXIT_CODE).not.toBe(1);
+    expect(COMMIT_UNCERTAIN_EXIT_CODE).not.toBe(2);
+    expect(d.out.join("\n")).toContain("commit outcome uncertain");
+    expect(d.out.join("\n")).toContain("Play Console");
+    expect(d.out.join("\n")).not.toContain("nothing published");
+    expect(f.calls.filter((c) => c.name === "edits.commit").length).toBe(1);
+  });
 });
 
 describe("version & misc", () => {
@@ -336,9 +418,9 @@ describe("version & misc", () => {
   test("a failed edits.delete is reported, not mis-logged as deleted", async () => {
     const f = fakePlay({ failDelete: "boom" });
     const d = deps(f.play);
-    await run(["tracks", "--package", "com.example.app"], d);
-    expect(d.out.at(-1)).toContain("could not be deleted");
-    expect(d.out.at(-1)).not.toContain("deleted (nothing published)");
+    await expect(run(["tracks", "--package", "com.example.app"], d)).rejects.toThrow("boom");
+    expect(d.out.join("\n")).toContain("could not be deleted");
+    expect(d.out.join("\n")).not.toContain("deleted (nothing published)");
   });
 
   test("parseDotenv strips inline comments on unquoted values only", () => {
